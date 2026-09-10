@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+DNS_1="1.1.1.1"
+DNS_9="9.9.9.9"
+DNS_DEFAULT="$DNS_1"
+SCRIPT_NAME="$(basename "$0")"
+
+# ── helpers ──────────────────────────────────────────────────────────────────
+
+die() {
+    echo "error: $*" >&2
+    exit 1
+}
+
+active_services() {
+    networksetup -listallnetworkservices 2>/dev/null |
+        sed '1d' |
+        while IFS= read -r service; do
+            # Skip disabled / "asterisk" placeholder services
+            [[ "$service" == "*"* ]] && continue
+            # Only include services that have an active hardware port
+            if networksetup -getinfo "$service" 2>/dev/null | grep -q '^IP address'; then
+                echo "$service"
+            fi
+        done
+}
+
+current_dns() {
+    local service="$1"
+    networksetup -getdnsservers "$service" 2>/dev/null
+}
+
+is_enabled() {
+    local service="$1"
+    local want="${2:-}"
+    local dns
+    dns="$(current_dns "$service")"
+    if [[ -n "$want" ]]; then
+        echo "$dns" | grep -qFx "$want"
+    else
+        echo "$dns" | grep -qFx "$DNS_1" || echo "$dns" | grep -qFx "$DNS_9"
+    fi
+}
+
+# ── commands ──────────────────────────────────────────────────────────────────
+
+cmd_on() {
+    local server="${1:-$DNS_DEFAULT}"
+    local changed=0
+    while IFS= read -r service; do
+        if is_enabled "$service" "$server"; then
+            echo "[skip] $service — already using $server"
+        else
+            networksetup -setdnsservers "$service" "$server" || die "failed to set DNS for $service"
+            echo "[ ok ] $service → $server"
+            changed=1
+        fi
+    done < <(active_services)
+    if [[ $changed -eq 1 ]]; then
+        flush_cache
+    fi
+}
+
+cmd_off() {
+    local changed=0
+    while IFS= read -r service; do
+        local dns
+        dns="$(current_dns "$service")"
+        if echo "$dns" | grep -q "There aren't any DNS"; then
+            echo "[skip] $service — already using DHCP DNS"
+        else
+            networksetup -setdnsservers "$service" "Empty" || die "failed to clear DNS for $service"
+            echo "[ ok ] $service → DHCP DNS"
+            changed=1
+        fi
+    done < <(active_services)
+    if [[ $changed -eq 1 ]]; then
+        flush_cache
+    fi
+}
+
+cmd_status() {
+    while IFS= read -r service; do
+        local dns
+        dns="$(current_dns "$service")"
+        printf "%-30s  %s\n" "$service" "$dns"
+    done < <(active_services)
+}
+
+cmd_toggle() {
+    local any_enabled=0
+    while IFS= read -r service; do
+        if is_enabled "$service"; then
+            any_enabled=1
+            break
+        fi
+    done < <(active_services)
+
+    if [[ $any_enabled -eq 1 ]]; then
+        cmd_off
+    else
+        cmd_on "$DNS_DEFAULT"
+    fi
+}
+
+flush_cache() {
+    sudo dscacheutil -flushcache 2>/dev/null || true
+    sudo killall -HUP mDNSResponder 2>/dev/null || true
+    echo "DNS cache flushed"
+}
+
+usage() {
+    cat <<EOF
+Usage: $SCRIPT_NAME [1|9|on|off|status|flush]
+
+  1       Set DNS to $DNS_1 (Cloudflare) on all active network services
+  9       Set DNS to $DNS_9 (Quad9) on all active network services
+  on [1|9]  Set DNS (default: $DNS_DEFAULT) on all active services
+  off     Revert all active services to DHCP-provided DNS
+  status  Show current DNS settings per service
+  flush   Flush the local DNS cache
+  (none)  Toggle — if any service uses $DNS_1 or $DNS_9, turn it off; otherwise turn it on
+
+EOF
+    exit 0
+}
+
+# ── main ──────────────────────────────────────────────────────────────────────
+
+# Must be run as root (networksetup requires it for -setdnsservers on Wi-Fi etc.)
+if [[ "${SKIP_ROOT_CHECK:-}" != "1" ]] && [[ $EUID -ne 0 ]]; then
+    # Re-exec with sudo, preserving args
+    exec sudo "$0" "$@"
+fi
+
+case "${1:-}" in
+    1)       cmd_on "$DNS_1" ;;
+    9)       cmd_on "$DNS_9" ;;
+    on)      case "${2:-}" in
+                 1) cmd_on "$DNS_1" ;;
+                 9) cmd_on "$DNS_9" ;;
+                 "") cmd_on "$DNS_DEFAULT" ;;
+                 *) usage ;;
+             esac ;;
+    off)     cmd_off ;;
+    status)  cmd_status ;;
+    flush)   flush_cache ;;
+    -h|--help) usage ;;
+    "")      cmd_toggle ;;
+    *)       usage ;;
+esac
