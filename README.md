@@ -15,9 +15,11 @@ This installs `dns` to `/usr/local/bin/dns`.
 ```sh
 dns 1       # Use 1.1.1.1 (Cloudflare) on all active services
 dns 9       # Use 9.9.9.9 (Quad9) on all active services
+dns 19      # Use both 1.1.1.1 + 9.9.9.9 on all active services
 dns on      # Same as `dns 1`
 dns on 1    # Use 1.1.1.1 (Cloudflare)
 dns on 9    # Use 9.9.9.9 (Quad9)
+dns on 19   # Use both 1.1.1.1 + 9.9.9.9
 dns off     # Revert to DHCP-provided DNS
 dns status  # Show current DNS per service
 dns flush   # Flush the local DNS cache

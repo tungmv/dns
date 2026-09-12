@@ -33,27 +33,35 @@ current_dns() {
 
 is_enabled() {
     local service="$1"
-    local want="${2:-}"
     local dns
     dns="$(current_dns "$service")"
-    if [[ -n "$want" ]]; then
-        echo "$dns" | grep -qFx "$want"
-    else
-        echo "$dns" | grep -qFx "$DNS_1" || echo "$dns" | grep -qFx "$DNS_9"
-    fi
+    echo "$dns" | grep -qFx "$DNS_1" || echo "$dns" | grep -qFx "$DNS_9"
+}
+
+# True if the service's DNS servers exactly match the requested list (order-sensitive).
+dns_matches() {
+    local service="$1"
+    shift
+    local dns expected
+    dns="$(current_dns "$service")"
+    expected="$(printf "%s\n" "$@")"
+    [[ "$dns" == "$expected" ]]
 }
 
 # ── commands ──────────────────────────────────────────────────────────────────
 
 cmd_on() {
-    local server="${1:-$DNS_DEFAULT}"
+    if [[ $# -eq 0 ]]; then
+        set -- "$DNS_DEFAULT"
+    fi
+    local label="$*"
     local changed=0
     while IFS= read -r service; do
-        if is_enabled "$service" "$server"; then
-            echo "[skip] $service — already using $server"
+        if dns_matches "$service" "$@"; then
+            echo "[skip] $service — already using $label"
         else
-            networksetup -setdnsservers "$service" "$server" || die "failed to set DNS for $service"
-            echo "[ ok ] $service → $server"
+            networksetup -setdnsservers "$service" "$@" || die "failed to set DNS for $service"
+            echo "[ ok ] $service → $label"
             changed=1
         fi
     done < <(active_services)
@@ -112,11 +120,12 @@ flush_cache() {
 
 usage() {
     cat <<EOF
-Usage: $SCRIPT_NAME [1|9|on|off|status|flush]
+Usage: $SCRIPT_NAME [1|9|19|on|off|status|flush]
 
   1       Set DNS to $DNS_1 (Cloudflare) on all active network services
   9       Set DNS to $DNS_9 (Quad9) on all active network services
-  on [1|9]  Set DNS (default: $DNS_DEFAULT) on all active services
+  19      Set DNS to $DNS_1 + $DNS_9 (both) on all active services
+  on [1|9|19]  Set DNS (default: $DNS_DEFAULT) on all active services
   off     Revert all active services to DHCP-provided DNS
   status  Show current DNS settings per service
   flush   Flush the local DNS cache
@@ -137,9 +146,11 @@ fi
 case "${1:-}" in
     1)       cmd_on "$DNS_1" ;;
     9)       cmd_on "$DNS_9" ;;
+    19)      cmd_on "$DNS_1" "$DNS_9" ;;
     on)      case "${2:-}" in
                  1) cmd_on "$DNS_1" ;;
                  9) cmd_on "$DNS_9" ;;
+                 19) cmd_on "$DNS_1" "$DNS_9" ;;
                  "") cmd_on "$DNS_DEFAULT" ;;
                  *) usage ;;
              esac ;;
